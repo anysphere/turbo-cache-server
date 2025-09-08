@@ -13,7 +13,15 @@ pid = parseInt(pid)
 
 console.log(`Turbo Cache Server will be stopped on pid: ${pid}`)
 
-process.kill(pid, 'SIGTERM')
+try {
+  process.kill(pid, 'SIGTERM')
+} catch (error) {
+  if (error.code === 'ESRCH') {
+    console.warn(`Process with pid ${pid} not found. It may have already been terminated.`)
+  } else {
+    throw error
+  }
+}
 
 const maxProcessCheckAttempts = 20
 const sleepTimeInMills = 500
