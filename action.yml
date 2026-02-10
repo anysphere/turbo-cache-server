@@ -1,6 +1,11 @@
 name: "Turbo Cache Server"
 description: "Turborepo remote cache server background process as Action"
 
+inputs:
+  logs-directory:
+    description: "Directory for server log files"
+    required: false
+
 runs:
   using: "node20"
   main: "action/main.mjs"

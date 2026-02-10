@@ -18,13 +18,15 @@ console.log(`Starting server with binary '${binaryName}'`);
 
 const serverBinary = resolve(__dirname, `./${binaryName}`);
 
+const logsDir = process.env.INPUT_LOGS_DIRECTORY || LOGS_DIR
+
 // Capture stdout/stderr for debugging startup failures
 const decayProcess = spawn(serverBinary, [], {
   detached: true,
   stdio: ["ignore", "pipe", "pipe"],
   env: {
     ...process.env,
-    LOGS_DIRECTORY: LOGS_DIR,
+    LOGS_DIRECTORY: logsDir,
   },
 });
 
@@ -99,7 +101,7 @@ ${colorString(consoleColor.FgGreen, "Health check passed at: ")}"${host}:${port}
 ${colorString(consoleColor.FgGreen, "Server startup output:")}
 ${startupOutput}
 
-${colorString(consoleColor.FgGreen, "Web server logs are being written at: ")}"${LOGS_DIR}"
+${colorString(consoleColor.FgGreen, "Web server logs are being written at: ")}"${logsDir}"
 `);
 
 saveState(DECAY_PID_KEY, pid?.toString());

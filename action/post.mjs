@@ -60,7 +60,8 @@ if (!isProcessRunning(pid)) {
 // Read logs and output it as-is so we can debug
 // any potential errors during the Turborepo remote cache API calls.
 // Logs are written on a "{crate_name}.log" file
-const logFile = path.resolve(LOGS_DIR, "decay.log");
+const logsDir = process.env['INPUT_LOGS_DIRECTORY'] || LOGS_DIR
+const logFile = path.resolve(logsDir, 'decay.log')
 console.log(`Reading Turbo Cache Server logs from ${logFile}`);
 const serverLogs = fs.readFileSync(logFile, { encoding: "utf-8" });
 console.log(serverLogs);
