@@ -1,4 +1,4 @@
-FROM alpine:3.23.3 AS ca-certificates
+FROM alpine:3.23.4 AS ca-certificates
 RUN apk add --no-cache ca-certificates
 
 FROM --platform=$BUILDPLATFORM rust:alpine AS chef
@@ -25,6 +25,14 @@ RUN cargo zigbuild -r \
   mkdir /app/linux && \
   cp target/aarch64-unknown-linux-musl/release/decay /app/linux/arm64 && \
   cp target/x86_64-unknown-linux-musl/release/decay /app/linux/amd64
+
+FROM ghcr.io/rust-cross/cargo-zigbuild AS macos-builder
+WORKDIR /app
+RUN rustup update stable && rustup default stable && \
+  rustup target add x86_64-apple-darwin aarch64-apple-darwin
+COPY . .
+RUN cargo zigbuild --release --target universal2-apple-darwin && \
+  cp target/universal2-apple-darwin/release/decay /app/decay-darwin-universal
 
 FROM scratch
 WORKDIR /app

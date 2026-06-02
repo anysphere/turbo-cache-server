@@ -1,6 +1,11 @@
+use std::collections::HashMap;
+
 use s3::{Bucket, Region, creds::Credentials, request::ResponseDataStream};
+use tokio::io::AsyncRead;
 
 use crate::app_settings::{AppSettings, S3ServerSideEncryption};
+
+const SSE_HEADER: http::HeaderName = http::HeaderName::from_static("x-amz-server-side-encryption");
 
 #[derive(Debug)]
 pub struct Storage {
@@ -51,22 +56,49 @@ impl Storage {
         maybe_file.ok()
     }
 
-    /// Stores the given data in the S3 bucket under the given path
-    #[tracing::instrument(name = "put S3 file")]
-    pub async fn put_file(&self, path: &str, data: &[u8]) -> Result<(), String> {
-        let response = match self.server_side_encryption {
-            Some(encryption) => {
-                self.bucket
-                    .put_object_builder(path, data)
-                    .with_server_side_encryption(encryption)
-                    .expect("Invalid server-side encryption header value")
-                    .execute()
-                    .await
+    /// Returns the user metadata stored on the S3 object, if present.
+    #[tracing::instrument(name = "get S3 object metadata")]
+    pub async fn get_metadata(&self, path: &str) -> Option<HashMap<String, String>> {
+        let (head_result, _status) = match self.bucket.head_object(path).await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(error = %error, path, "HEAD request failed, omitting object metadata");
+                return None;
             }
-            None => self.bucket.put_object(path, data).await,
         };
+        head_result.metadata
+    }
 
-        match response {
+    /// Streams the given data to the S3 bucket under the given path.
+    /// When `metadata` is provided, each key-value pair is persisted as S3 user
+    /// metadata (x-amz-meta-*) so it can be retrieved on subsequent HEADs.
+    #[tracing::instrument(name = "put S3 file stream", skip(reader))]
+    pub async fn put_file_stream<R>(
+        &self,
+        path: &str,
+        reader: &mut R,
+        metadata: Option<&HashMap<String, String>>,
+    ) -> Result<(), String>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut builder = self.bucket.put_object_stream_builder(path);
+
+        if let Some(encryption) = self.server_side_encryption {
+            builder = builder
+                .with_header(SSE_HEADER, encryption.as_str())
+                .expect("Invalid server-side encryption header value");
+        }
+
+        if let Some(metadata) = metadata {
+            for (key, value) in metadata {
+                builder = builder
+                    .with_metadata(key, value)
+                    .expect("Invalid metadata value");
+            }
+        }
+
+        match builder.execute_stream(reader).await {
             Ok(_response) => Ok(()),
             Err(e) => Err(format!("Could not upload file: {e}")),
         }

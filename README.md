@@ -17,9 +17,9 @@ with:
 
 - [Amazon S3](https://aws.amazon.com/s3/)
 - [Cloudflare R2](https://www.cloudflare.com/en-gb/developer-platform/r2/)
-- [Minio Object Storage](https://min.io/)
+- [RustFS](https://github.com/rustfs/rustfs)
 
-You can use the Turbo Cache Server as a **GitHub Action**. Here is how:
+The GitHub Action supports both **Linux** (`x64` and `arm64`) and **macOS** (`x64` and `arm64` via a universal binary) runners. Here is how to use it:
 
 1.  In your workflow files, add the following global environment variables:
 
@@ -27,7 +27,10 @@ You can use the Turbo Cache Server as a **GitHub Action**. Here is how:
     env:
       TURBO_API: "http://127.0.0.1:8585"
       TURBO_TEAM: "NAME_OF_YOUR_REPO_HERE"
-      # The value of TURBO_TOKEN will be checked by the cache server
+      # TURBO_TOKEN is required by Turborepo to enable remote caching.
+      # The cache server only validates it when TURBO_TOKEN is also set
+      # on the server itself — otherwise the server accepts any value.
+      # See the "Authentication" section below for details.
       TURBO_TOKEN: "secret-turbo-token"
     ```
 
@@ -43,7 +46,7 @@ You can use the Turbo Cache Server as a **GitHub Action**. Here is how:
           # As we don't ship the latest versions of the binary on the main branch
           # PLEASE see the latest versions here:
           # https://github.com/brunojppb/turbo-cache-server/releases
-          uses: brunojppb/turbo-cache-server@2.0.2
+          uses: brunojppb/turbo-cache-server@4.0.7
           env:
             PORT: "8585"
             S3_BUCKET_NAME: your-bucket-name-here
@@ -52,7 +55,7 @@ You can use the Turbo Cache Server as a **GitHub Action**. Here is how:
             # Optional: If you need to provide specific auth keys, separate from default AWS credentials
             S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
             S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-            # Optional: If not using AWS, provide endpoint like `https://minio` for your instance.
+            # Optional: If not using AWS, provide endpoint like `https://rustfs` for your instance.
             S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
             # Optional: If your S3-compatible store does not support requests
             # like https://bucket.hostname.domain/. Setting `S3_USE_PATH_STYLE`
@@ -63,10 +66,6 @@ You can use the Turbo Cache Server as a **GitHub Action**. Here is how:
             # Optional: Enable server-side encryption for stored artifacts.
             # Valid values: AES256, aws:kms, aws:kms:dsse, aws:fsx
             S3_SERVER_SIDE_ENCRYPTION: "AES256"
-            # Max payload size for each cache object sent by Turborepo
-            # Defaults to 100 MB
-            # Requests larger than that, will get "HTTP 413: Entity Too Large" errors
-            MAX_PAYLOAD_SIZE_IN_MB: "100"
 
         # Now you can run your turborepo tasks and rely on the cache server
         # available in the background to provide previously built artifacts (cache hits)
@@ -102,10 +101,34 @@ docker run \
   -e S3_ENDPOINT=https://s3_endpoint_here \
   -e S3_REGION=eu \
   -e S3_SERVER_SIDE_ENCRYPTION=AES256 \
+  # Optional: enables authentication. See "Authentication" below.
   -e TURBO_TOKEN=secret-turbo-token \
   -p "8000:8000" \
-  ghcr.io/brunojppb/turbo-cache-server
+  ghcr.io/brunojppb/turbo-cache-server:4.0.7
 ```
+
+## Authentication
+
+Turbo Cache Server runs **without authentication by default**. This is an
+intentional design decision: in the vast majority of deployments the server
+sits behind a private network (a VPC, a Kubernetes cluster, or a GitHub
+Actions runner) where only trusted sources can reach it, and requiring a
+shared token adds overhead without a meaningful security benefit.
+
+To enable authentication, set the `TURBO_TOKEN` environment variable on the
+server. When set, every incoming request must include an
+`Authorization: Bearer <TURBO_TOKEN>` header or it will be rejected with
+`401 Unauthorized`. Turborepo clients read their own `TURBO_TOKEN` env var
+and send this header automatically, so the server-side and client-side
+values must match.
+
+When `TURBO_TOKEN` is unset on the server, the authentication middleware is
+bypassed entirely and any `Authorization` header on incoming requests is
+ignored.
+
+> [!TIP]
+> If you expose the cache server to the public internet, or to networks you
+> do not fully control, you should set `TURBO_TOKEN` on the server.
 
 ## Deploying to Kubernetes
 
@@ -134,6 +157,7 @@ type: Opaque
 stringData:
   S3_ACCESS_KEY: "your-access-key-here"
   S3_SECRET_KEY: "your-secret-key-here"
+  # Optional: omit to run without authentication. See "Authentication" above.
   TURBO_TOKEN: "secret-turbo-token"
 ```
 
@@ -163,7 +187,7 @@ spec:
     spec:
       containers:
         - name: turbo-cache-server
-          image: ghcr.io/brunojppb/turbo-cache-server:latest
+          image: ghcr.io/brunojppb/turbo-cache-server:4.0.7
           ports:
             - containerPort: 8000
               name: http
@@ -184,6 +208,7 @@ spec:
                 secretKeyRef:
                   name: turbo-cache-s3-credentials
                   key: S3_SECRET_KEY
+            # Optional: only needed when authentication is enabled.
             - name: TURBO_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -193,8 +218,6 @@ spec:
               value: "https://your-s3-endpoint.com"
             - name: S3_SERVER_SIDE_ENCRYPTION
               value: "AES256"
-            - name: MAX_PAYLOAD_SIZE_IN_MB
-              value: "100"
           resources:
             requests:
               memory: "128Mi"
@@ -245,6 +268,8 @@ Apply the service:
 ```shell
 kubectl apply -f turbo-cache-service.yaml
 ```
+
+Artifacts are uploaded to S3 using streaming rather than full in-memory buffering. There is no server-side setting for enforcing payload size, so size limits should be enforced by your reverse proxy, ingress, load balancer, or storage policy if you need them.
 
 #### 4. (Optional) Create an Ingress
 
@@ -313,7 +338,7 @@ Object expiration is based on the last modified time of objects in your bucket. 
 
 ### AWS S3 and S3-Compatible Providers
 
-For AWS S3, Cloudflare R2, Minio, and other S3-compatible providers, you can use the AWS CLI to configure lifecycle rules.
+For AWS S3, Cloudflare R2, RustFS, and other S3-compatible providers, you can use the AWS CLI to configure lifecycle rules.
 
 #### Expire objects after 30 days
 
@@ -362,7 +387,7 @@ You can also set a specific expiration date:
 - **AWS S3**: Full lifecycle management support. See the [AWS S3 Lifecycle documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html) for advanced options like transitioning to different storage classes.
 - **Cloudflare R2**: Supports S3-compatible lifecycle API. Use the same AWS CLI commands with your R2 endpoint.
 - **Tigris**: Supports object expiration via lifecycle rules. See the [Tigris object expiration documentation](https://www.tigrisdata.com/docs/buckets/objects-expiration/) for details.
-- **Minio**: Supports S3-compatible lifecycle configuration. Use the AWS CLI with your Minio endpoint.
+- **RustFS**: Use the AWS CLI with your RustFS endpoint when your deployment exposes the S3 lifecycle APIs.
 
 ### Important Considerations
 
@@ -391,6 +416,16 @@ The OpenTelemetry integration works with all major observability SaaS platforms 
 
 - **Commercial Platforms**: [Datadog](https://www.datadoghq.com/), [New Relic](https://newrelic.com/), [Honeycomb](https://www.honeycomb.io/), [Lightstep](https://lightstep.com/), [Dynatrace](https://www.dynatrace.com/)
 - **Open Source**: [Jaeger](https://www.jaegertracing.io/), [Prometheus](https://prometheus.io/), [Grafana Tempo](https://grafana.com/oss/tempo/), [Zipkin](https://zipkin.io/)
+
+### Disabling OpenTelemetry
+
+If you don't need telemetry, you can disable the OpenTelemetry SDK entirely by setting the `OTEL_SDK_DISABLED` environment variable to `true`. This follows the [OpenTelemetry specification](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/#general-sdk-configuration) for disabling the SDK.
+
+```shell
+export OTEL_SDK_DISABLED="true"
+```
+
+When disabled, no OTLP exporters or system metric collectors will be initialized, and no connections will be attempted to any collector endpoint. Standard console and file logging will continue to work normally.
 
 ### Configuration
 
@@ -423,13 +458,15 @@ export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=<your-api-key>"
 
 ### Local Development
 
-For local testing, you can use the provided Docker Compose setup that includes Jaeger and Prometheus:
+For local testing, you can use the provided Docker Compose setup that includes RustFS, Jaeger, and Prometheus:
 
 ```shell
 docker-compose -f docker-compose.otel.yml up
 ```
 
 This starts:
+- **RustFS API**: http://localhost:9000
+- **RustFS Console**: http://localhost:9001
 - **Jaeger UI**: http://localhost:16686 (trace visualization)
 - **Prometheus**: http://localhost:9090 (metrics storage and queries)
 - **OpenTelemetry Collector**: Receives and routes telemetry data
@@ -463,7 +500,7 @@ sequenceDiagram
     participant E as S3 bucket
     A->>+B: Push new commit to GH.<br>Trigger PR Checks.
     B->>+C: Trigger CI pipeline
-    C->>+D: turborepo cache server via<br/>"use: turbo-cache-server@0.0.2" action
+    C->>+D: turborepo cache server via<br/>"use: turbo-cache-server@4.0.7" action
     Note right of C: Starts a server instance<br/> in the background.
     D-->>-C: Turbo cache server ready
     C->>+D: Turborepo executes task<br/>(e.g. test, build)
@@ -492,7 +529,7 @@ sequenceDiagram
     participant E as S3 bucket
     A->>+B: Push new commit to GH.<br>Trigger PR Checks.
     B->>+C: Trigger CI pipeline
-    C->>+D: turborepo cache server via<br/>"use: turbo-cache-server@0.0.2" action
+    C->>+D: turborepo cache server via<br/>"use: turbo-cache-server@4.0.7" action
     Note right of C: Starts a server instance<br/> in the background.
     D-->>-C: Turborepo cache server ready
     C->>+D: Turborepo executes build task
@@ -532,28 +569,33 @@ cargo run
 
 During local development, you might want to try the Turbo Dev Server locally
 against a JS monorepo. As it depends on a S3-compatible service for storing
-Turborepo artifacts, we recommend using [Minio](https://min.io/) with Docker
+Turborepo artifacts, we recommend using [RustFS](https://github.com/rustfs/rustfs) with Docker
 with the following command:
 
 ```shell
-docker run \
-  -d \
+docker run -d \
+  --name rustfs_container \
   -p 9000:9000 \
   -p 9001:9001 \
-  --user $(id -u):$(id -g) \
-  --name minio1 \
-  -e "MINIO_ROOT_USER=minio" \
-  -e "MINIO_ROOT_PASSWORD=minio12345" \
-  -v ./s3_data:/data \
-  quay.io/minio/minio server /data --console-address ":9001"
+  -v $(pwd)/s3_data:/data \
+  -v $(pwd)/s3_logs:/logs \
+  -e RUSTFS_ACCESS_KEY=rustfsadmin \
+  -e RUSTFS_SECRET_KEY=rustfsadmin \
+  -e RUSTFS_CONSOLE_ENABLE=true \
+  rustfs/rustfs:latest \
+  --address :9000 \
+  --console-enable \
+  --access-key rustfsadmin \
+  --secret-key rustfsadmin \
+  /data
 ```
 
 #### Setting up environment variables
 
 Copy the `.env.example` file, rename it to `.env` and add the environment
-variables required. As we use Minio locally, just go to the
-[Web UI](http://localhost:9001) of Minio, create a bucket and generate
-credentials and copy it to the `.env` file.
+variables required. As we use RustFS locally, open the
+[Web UI](http://localhost:9001), create a bucket, and use `rustfsadmin` for
+both `S3_ACCESS_KEY` and `S3_SECRET_KEY` in the `.env` file.
 
 ### Tests
 
